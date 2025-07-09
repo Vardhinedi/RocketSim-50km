@@ -1,8 +1,7 @@
 import time
 import math
 from config import (GRAVITY, ISP, THRUST, DRAG_COEFF, CROSS_SECTION_AREA,
-                    PROPELLANT_MASS, DRY_MASS, RETRO_THRUST, RETRO_BURN_ALT,
-                    TIME_STEP, MAX_G_FORCE)
+                    PROPELLANT_MASS, DRY_MASS, TIME_STEP, MAX_G_FORCE)
 
 def get_air_density(altitude):
     return 1.225 * math.exp(-altitude / 8500)
@@ -20,7 +19,7 @@ def main():
     max_altitude = 0
 
     burnout = False
-    retro_burn_started = False
+    parachute_deployed = False
     g_force = 0  # Initialize for first print
 
     print("🚀 Launching Rocket...\n")
@@ -44,13 +43,14 @@ def main():
                 burnout = True
             thrust_force = 0
 
-        # Retro burn
-        if burnout and altitude <= RETRO_BURN_ALT and not retro_burn_started and velocity < 0:
-            print("🛬 Retro Burn Initiated\n")
-            thrust_force = RETRO_THRUST
-            retro_burn_started = True
-        elif retro_burn_started:
-            thrust_force = RETRO_THRUST
+        # Parachute logic (only during descent, below 2 km)
+        if burnout and not parachute_deployed and altitude < 2000 and velocity < 0:
+            print("🪂 Parachute Deployed\n")
+            parachute_deployed = True
+
+        if parachute_deployed:
+            # Simulate strong drag from parachute to slow descent
+            drag *= 5
 
         # Update dynamics
         total_mass = DRY_MASS + propellant_mass
