@@ -1,77 +1,80 @@
-# rocket.py
-
-from config import *
-import math
+import json
+import os
+import numpy as np
 
 class Rocket:
     def __init__(self):
-        self.time = 0
+        config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+        with open(config_path) as f:
+            self.config = json.load(f)
+        
+        self.reset()
+    
+    def reset(self):
         self.altitude = 0
         self.velocity = 0
-        self.mass = DRY_MASS + PROPELLANT_MASS
-        self.burning = True
-        self.meco = False
-        self.parachute_deployed = False
-        self.max_altitude = 0
-        self.g_force = 0
+        self.acceleration = 0
+        self.propellant_mass = self.config["rocket"]["propellant_mass"]
+        self.dry_mass = self.config["rocket"]["dry_mass"]
+        self.throttle = 0
+        self.time = 0
+        self.earth_radius = 6.371e6
+        self.g0 = 9.81
+    
+    @property
+    def mass(self):
+        return self.dry_mass + max(0, self.propellant_mass)
+    
+    def update(self, dt):
+        config = self.config
 
-    def get_air_density(self):
-        return AIR_DENSITY_SEA_LEVEL * math.exp(-self.altitude / 8500)
+        if self.propellant_mass > 0:
+            thrust = self.throttle * config["engine"]["thrust"]
+            isp = config["engine"]["isp"]
+            fuel_rate = thrust / (isp * self.g0)
+            fuel_consumed = min(fuel_rate * dt, self.propellant_mass)
+            self.propellant_mass -= fuel_consumed
+        else:
+            thrust = 0
 
-    def get_drag_force(self):
-        rho = self.get_air_density()
-        drag = 0.5 * DRAG_COEFF * CROSS_SECTION_AREA * rho * self.velocity ** 2
-        return -drag if self.velocity > 0 else drag
+        gravity_force = self.g0 * (self.earth_radius / (self.earth_radius + self.altitude))**2 * self.mass
 
-    def update(self):
-        # Compute forces
-        thrust = THRUST if self.burning else 0
-        drag = self.get_drag_force()
-        weight = self.mass * GRAVITY
+        scale_height = 8500
+        air_density = 1.225 * np.exp(-self.altitude / scale_height)
 
-        net_force = thrust + drag - weight
-        acceleration = net_force / self.mass
-        self.g_force = abs(acceleration / GRAVITY)
+        drag_coeff = config["rocket"]["drag_coeff"]
+        cross_section = config["rocket"]["cross_section_area"]
+        if self.altitude < config["stages"]["parachute_deploy_alt"] and self.velocity < 0:
+            cross_section = 10.0  # parachute deployed
 
-        # Update kinematics
-        self.velocity += acceleration * TIME_STEP
-        self.altitude += self.velocity * TIME_STEP
-        self.altitude = max(0, self.altitude)
-        self.time += TIME_STEP
+        drag = 0.5 * air_density * drag_coeff * cross_section * self.velocity**2
+        drag_direction = -np.sign(self.velocity) if self.velocity != 0 else 0
 
-        # Max altitude tracker
-        self.max_altitude = max(self.max_altitude, self.altitude)
+        self.acceleration = (thrust - gravity_force + drag_direction * drag) / self.mass
 
-        # Fuel burn
-        if self.burning:
-            self.mass -= BURN_RATE * TIME_STEP
-            if self.mass <= DRY_MASS:
-                self.mass = DRY_MASS
-                self.burning = False
+        self.velocity += self.acceleration * dt
+        self.altitude += self.velocity * dt
 
-        # MECO condition
-        if not self.meco and (not self.burning or self.altitude >= MECO_ALTITUDE or self.g_force > MAX_G_FORCE):
-            self.burning = False
-            self.meco = True
-            print(f"💥 MECO at t+{int(self.time)}s | Alt: {int(self.altitude)} m | V: {int(self.velocity)} m/s | G: {self.g_force:.2f} g")
+        if self.altitude <= 0:
+            self.altitude = 0
+            if self.velocity < 0:
+                self.velocity = 0
+                self.acceleration = 0
 
-        # Parachute deployment
-        if not self.parachute_deployed and self.altitude < PARACHUTE_DEPLOY_ALT and self.velocity < 0:
-            self.parachute_deployed = True
-            print(f"🪂 Parachute deployed at t+{int(self.time)}s | Alt: {int(self.altitude)} m")
-
-        # Apply parachute drag
-        if self.parachute_deployed:
-            self.velocity *= 0.8  # crude deceleration
+        self.time += dt
 
         return {
-            "t": self.time,
             "altitude": self.altitude,
             "velocity": self.velocity,
-            "g_force": self.g_force,
-            "meco": self.meco,
-            "parachute": self.parachute_deployed
+            "acceleration": self.acceleration,
+            "mass": self.mass,
+            "time": self.time
         }
 
-    def has_landed(self):
-        return self.altitude <= 0 and self.time > 3
+    def get_observation(self):
+        target_altitude = self.config["simulation"]["target_altitude"]
+        return np.array([
+            min(self.altitude / target_altitude, 1.0),
+            np.clip(self.velocity / 2000, -1.0, 1.0),
+            np.clip(self.acceleration / (3 * self.g0), -1.0, 1.0)
+        ], dtype=np.float32)

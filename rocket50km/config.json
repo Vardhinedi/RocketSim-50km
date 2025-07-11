@@ -1,0 +1,27 @@
+{
+  "rocket": {
+    "dry_mass": 400,
+    "propellant_mass": 1000,
+    "cross_section_area": 1.0,
+    "drag_coeff": 0.45
+  },
+  "engine": {
+    "thrust": 250000,
+    "isp": 280,
+    "min_throttle": 0.3
+  },
+  "stages": {
+    "parachute_deploy_alt": 5000
+  },
+  "simulation": {
+    "time_step": 0.05,
+    "max_sim_time": 300,
+    "target_altitude": 50000,
+    "physics_steps_per_rl_step": 10
+  },
+  "environment": {
+    "gravity": 9.81,
+    "air_density": 1.225,
+    "wind_speed": 5.0
+  }
+}
