@@ -1,0 +1,12 @@
+{
+  "temp": 24,
+  "wind": 0,
+  "pressure": 1015,
+  "humidity": 20,
+  "visibility": 20,
+  "clouds": 5,
+  "thrust": 970,
+  "pump_pressure": 130,
+  "avionics": 1.0,
+  "sensors": 1.0
+}
