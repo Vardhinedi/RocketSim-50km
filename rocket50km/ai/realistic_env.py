@@ -1,11 +1,10 @@
-# realistic_env.py
-
 import math
 import gym
 from gym import spaces
 import numpy as np
 import json
 import os
+import csv
 
 # Load config
 config_path = os.path.join(os.path.dirname(__file__), '..', 'config.json')
@@ -17,6 +16,16 @@ engine_cfg = cfg["engine"]
 sim_cfg = cfg["simulation"]
 env_cfg = cfg["environment"]
 
+# Load RocketPy-generated atmosphere
+env_profile_path = os.path.join(os.path.dirname(__file__), '..', 'rocketpy_env', 'env_profile.json')
+with open(env_profile_path, 'r') as f:
+    env_profile = json.load(f)
+
+density_lookup = {int(k): v for k, v in env_profile["air_density"].items()}
+wind_lookup = {int(k): v for k, v in env_profile["wind_speed"].items()}
+
+LOG_PATH = os.path.join(os.path.dirname(__file__), '..', 'flight_log.csv')
+
 class RealisticRocketSim:
     def __init__(self):
         self.reset()
@@ -27,6 +36,7 @@ class RealisticRocketSim:
         self.velocity = 0.0
         self.acceleration = 0.0
         self.throttle = 1.0
+        self.pitch_angle = 90.0  # auto-updated during gravity turn
         self.downrange = 0.0
         self.horizontal_velocity = 0.0
 
@@ -37,7 +47,7 @@ class RealisticRocketSim:
         self.cross_section_area = rocket_cfg["cross_section_area"]
         self.drag_coeff = rocket_cfg["drag_coeff"]
         self.base_drag_coeff = rocket_cfg["drag_coeff"]
-        self.chute_drag_coeff = 3.0
+        self.chute_drag_coeff = 15.0
 
         self.thrust = engine_cfg["thrust"]
         self.isp = engine_cfg["isp"]
@@ -49,40 +59,55 @@ class RealisticRocketSim:
 
         self.parachute_deployed = False
         self.parachute_altitude = 10000
-        self.wind_speed = env_cfg["wind_speed"]
 
         self.done = False
         self.landed = False
         self.max_altitude = 0.0
 
-        self.pitch_angle = 88.0  # degrees: slightly tilted for horizontal velocity
+        # Reset CSV log
+        with open(LOG_PATH, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "time", "altitude", "velocity", "acceleration", "fuel_mass",
+                "pitch_angle", "throttle", "parachute", "downrange", "horizontal_velocity"
+            ])
 
     def get_air_density(self, altitude):
-        if altitude < 11000:
-            temp = 288.15 - 0.0065 * altitude
-            pressure = 101325 * (temp / 288.15) ** 5.2561
-        else:
-            temp = 216.65
-            pressure = 22632 * math.exp(-0.0001577 * (altitude - 11000))
-        return pressure / (287.05 * temp)
+        alt = int(min(50000, max(0, round(altitude, -3))))
+        return density_lookup.get(alt, 1.2)
+
+    def get_wind_speed(self, altitude):
+        alt = int(min(50000, max(0, round(altitude, -3))))
+        return wind_lookup.get(alt, 0.0)
 
     def get_gravity(self, altitude):
         R = 6371000
         return 9.80665 * (R / (R + altitude)) ** 2
 
+    def update_pitch(self):
+        if self.altitude < 1000:
+            self.pitch_angle = 90.0
+        elif self.altitude < 10000:
+            self.pitch_angle = 90.0 - 45.0 * ((self.altitude - 1000) / 9000.0)
+        else:
+            self.pitch_angle = 45.0
+
     def step(self, action):
         if self.done:
             return self.get_state()
 
-        throttle = max(self.min_throttle, min(action[0], 1.0))
+        throttle = float(np.clip(action[0], self.min_throttle, 1.0))
+        self.throttle = throttle
 
-        # Deploy parachute
+        self.update_pitch()
+
         if not self.parachute_deployed and self.altitude <= self.parachute_altitude and self.velocity < 0:
             self.parachute_deployed = True
             self.drag_coeff = self.chute_drag_coeff
 
         g = self.get_gravity(self.altitude)
         rho = self.get_air_density(self.altitude)
+        wind_speed = self.get_wind_speed(self.altitude)
 
         if self.fuel_mass > 0:
             flow_rate = self.thrust / (self.isp * g)
@@ -97,22 +122,22 @@ class RealisticRocketSim:
             thrust_force = 0.0
             self.mass = self.dry_mass
 
-        # Split thrust into vertical and horizontal
         pitch_rad = math.radians(self.pitch_angle)
         thrust_vertical = thrust_force * math.sin(pitch_rad)
         thrust_horizontal = thrust_force * math.cos(pitch_rad)
 
+        # Vertical
         drag = 0.5 * rho * self.velocity**2 * self.drag_coeff * self.cross_section_area
         drag *= -1 if self.velocity > 0 else 1
-
         net_vertical_force = thrust_vertical - self.mass * g + drag
         self.acceleration = net_vertical_force / self.mass
         self.velocity += self.acceleration * self.time_step
         self.altitude += self.velocity * self.time_step
 
-        # Horizontal motion
-        drag_horizontal = 0.5 * rho * self.horizontal_velocity**2 * self.drag_coeff * self.cross_section_area
-        drag_horizontal *= -1 if self.horizontal_velocity > 0 else 1
+        # Horizontal
+        relative_horizontal_velocity = self.horizontal_velocity - wind_speed
+        drag_horizontal = 0.5 * rho * relative_horizontal_velocity**2 * self.drag_coeff * self.cross_section_area
+        drag_horizontal *= -1 if relative_horizontal_velocity > 0 else 1
         net_horizontal_force = thrust_horizontal + drag_horizontal
         horiz_acc = net_horizontal_force / self.mass
         self.horizontal_velocity += horiz_acc * self.time_step
@@ -120,6 +145,21 @@ class RealisticRocketSim:
 
         self.time += self.time_step
         self.max_altitude = max(self.max_altitude, self.altitude)
+
+        with open(LOG_PATH, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                round(self.time, 2),
+                round(self.altitude, 2),
+                round(self.velocity, 2),
+                round(self.acceleration, 3),
+                round(self.fuel_mass, 2),
+                round(self.pitch_angle, 2),
+                round(self.throttle, 2),
+                int(self.parachute_deployed),
+                round(self.downrange, 2),
+                round(self.horizontal_velocity, 2)
+            ])
 
         if self.altitude <= 0 and self.time > 2:
             self.altitude = 0
@@ -137,6 +177,7 @@ class RealisticRocketSim:
             "fuel_mass": self.fuel_mass,
             "x": self.downrange,
             "vx": self.horizontal_velocity,
+            "pitch": self.pitch_angle
         }
 
 class RealisticRocketEnv(gym.Env):
@@ -169,7 +210,9 @@ class RealisticRocketEnv(gym.Env):
 
     def render(self, mode="human"):
         chute = "✅ Parachute" if self.rocket.parachute_deployed else "🟦 No Chute"
-        print(f"Time: {self.rocket.time:.1f}s | Alt: {self.rocket.altitude:.1f} m | Vel: {self.rocket.velocity:.1f} m/s | Fuel: {self.rocket.fuel_mass:.1f} kg | {chute}")
+        print(f"Time: {self.rocket.time:.1f}s | Alt: {self.rocket.altitude:.1f} m | "
+              f"Vel: {self.rocket.velocity:.1f} m/s | Fuel: {self.rocket.fuel_mass:.1f} kg | "
+              f"Pitch: {self.rocket.pitch_angle:.1f}° | {chute}")
 
     def _get_obs(self):
         s = self.rocket.get_state()

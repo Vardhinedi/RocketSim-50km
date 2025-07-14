@@ -15,7 +15,7 @@
   },
   "simulation": {
     "time_step": 0.05,
-    "max_sim_time": 300,
+    "max_sim_time": 600,
     "target_altitude": 50000,
     "physics_steps_per_rl_step": 10
   },

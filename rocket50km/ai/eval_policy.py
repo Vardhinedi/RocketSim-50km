@@ -1,4 +1,7 @@
 # ai/eval_policy.py
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import json
 import time
@@ -8,6 +11,7 @@ from stable_baselines3 import PPO
 from ai.realistic_env import RealisticRocketEnv as RocketEnv
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+
 
 
 def evaluate_policy():
